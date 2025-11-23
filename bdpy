@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""
+bd-utils.py
+
+Python CLI to aid in the process of measuring bulk density from photogrammetry. (Whiting et al., 2020)
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from enum import Enum
+from pathlib import Path
+from typing import Dict, Iterable, List
+
+
+class MovBackend(Enum):
+    NONE = 0
+    CV2 = 1
+    FFMPEG = 2
+
+
+class HeicBackend(Enum):
+    NONE = 0
+    PILLOW = 1
+    MAGICK = 2
+
+
+class FbxBackend(Enum):
+    NONE = 0
+    PYASSIMP = 1
+    ASSIMP = 2
+
+
+_dir_confirmed: Dict[Path, bool] = {}
+
+### HELPERS
+
+
+def cpu_workers_default() -> int:
+    n = os.cpu_count() or 1
+    return max(1, n // 2)
+
+
+def error(msg: str, exit_code: int = 1) -> None:
+    print(f"Error: {msg}", file=sys.stderr)
+    sys.exit(exit_code)
+
+
+def err_file(path: Path) -> None:
+    error(f"input file '{path}' is not a file.", 2)
+
+
+def err_dir(path: Path) -> None:
+    error(f"input directory '{path}' is not a directory", 2)
+
+
+def ask_yn(prompt: str, default: bool = False) -> bool:
+    while True:
+        default_str = "Y/n" if default else "y/N"
+        resp = input(f"{prompt} [{default_str}] ").strip().lower()
+        if not resp:
+            return default
+        if resp in {"y", "yes"}:
+            return True
+        if resp in {"n", "no"}:
+            return False
+        print("Please answer 'y' or 'n'.")
+
+
+def confirm_or_create_dir(path: Path) -> None:
+    global _dir_confirmed
+
+    p = path.resolve()
+
+    if p in _dir_confirmed:
+        if not p.exists():
+            p.mkdir(parents=True, exist_ok=True)
+        return
+
+    if p.exists():
+        if not p.is_dir():
+            err_dir(p)
+        if any(p.iterdir()):
+            ok = ask_yn(
+                "Directory '{p}' is not empty. "
+                "Overwrite existing files in this directory as needed?",
+                default=False,
+            )
+            if not ok:
+                error("Exiting!")
+        _dir_confirmed[p] = True
+        return
+
+    ok = ask_yn(f"Directory '{p}' does not exist. Create?", default=True)
+    if not ok:
+        error("Exiting!")
+    p.mkdir(parents=True, exist_ok=True)
+    _dir_confirmed[p] = True
+
+
+def ensure_file_writeable(path: Path) -> None:
+    p = path.resolve()
+    if not p.exists():
+        return
+
+    if p.is_dir():
+        error(f"Cannot overwrite directory '{p}' with a file.")
+
+    ok = ask_yn(f"File '{p}' already exists. Overwrite?")
+    if not ok:
+        error("Exiting!")
+
+
+def run_cmd(cmd: List[str]) -> None:
+    import subprocess
+
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError:
+        error(f"command '{cmd[0]}' not found in PATH.")
+    except subprocess.CalledProcessError as e:
+        error(
+            f"command failed with exit code {e.returncode}: {' '.join(cmd)}",
+            exit_code=e.returncode,
+        )
+
+
+def detect_mov_backend() -> MovBackend:
+    try:
+        import cv2  # type: ignore # noqa: F401
+
+        return MovBackend.CV2
+    except ImportError:
+        if shutil.which("ffmpeg"):
+            return MovBackend.FFMPEG
+        return MovBackend.NONE
+
+
+def detect_heic_backend() -> HeicBackend:
+    try:
+        from PIL import Image  # type: ignore # noqa: F401
+        import pillow_heif  # type: ignore # noqa: F401
+
+        return HeicBackend.PILLOW
+    except ImportError:
+        if shutil.which("magick") or shutil.which("convert"):
+            return HeicBackend.MAGICK
+        return HeicBackend.NONE
+
+
+def detect_fbx_backend() -> FbxBackend:
+    try:
+        import pyassimp  # type: ignore # noqa: F401
+
+        return FbxBackend.PYASSIMP
+    except ImportError:
+        if shutil.which("assimp"):
+            return FbxBackend.ASSIMP
+        return FbxBackend.NONE
+
+
+### mov2jpg
+
+
+def cmd_mov2jpg(args: argparse.Namespace) -> None:
+    backend = detect_mov_backend()
+    input_path = Path(args.input)
+    out_root = Path(args.output_dir)
+
+    if not input_path.is_file():
+        err_file(input_path)
+
+    out_dir = out_root / input_path.stem
+    confirm_or_create_dir(out_dir)
+
+    fps = float(args.fps)
+
+    if backend is MovBackend.CV2:
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            error(f"could not open video file '{input_path}'", 2)
+
+        source_fps = cap.get(cv2.CAP_PROP_FPS)
+        if not source_fps or source_fps <= 0:
+            frame_step = 1
+            print(f"[mov2jpg] Backend=CV2; source FPS unknown; saving every frame")
+        else:
+            frame_step = max(int(round(source_fps / fps)), 1)
+            print(
+                f"[mov2jpg] Backend=CV2; source FPS ~{source_fps:.2f}, "
+                f"target {fps} fps, frame_step={frame_step}"
+            )
+
+        frame_index = 0
+        out_index = 1
+        saved = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_index % frame_step == 0:
+                out_file = out_dir / f"frame_{out_index:03d}.jpg"
+                ok = cv2.imwrite(str(out_file), frame)
+                if not ok:
+                    print(
+                        f"[mov2jpg] Warning: failed to write {out_file}",
+                        file=sys.stderr,
+                    )
+                else:
+                    saved += 1
+                    out_index += 1
+            frame_index += 1
+
+        cap.release()
+        print(f"[mov2jpg] Done! Saved {saved} frame(s) to: {out_dir}")
+    elif backend is MovBackend.FFMPEG:
+        ffmpeg = shutil.which("ffmpeg")
+        assert ffmpeg is not None
+        print(
+            f"[mov2jpg] Backend=FFMPEG; extracting at {fps} fps "
+            f"from '{input_path}' to '{out_dir}'"
+        )
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(input_path),
+            "-map_metadata",
+            "0",
+            "-vf",
+            f"fps={fps}",
+            "-vsync",
+            "0",
+            "-start_number",
+            "1",
+            "-q:v",
+            "1",
+            "-color_range",
+            "mpeg",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-f",
+            "image2",
+            str(out_dir / "frame_%03d.jpg"),
+        ]
+
+        run_cmd(cmd)
+        print(f"[mov2jpg] Done! Frames written to: {out_dir}")
+    else:
+        error(
+            "No backend available for mov2jpg.\n"
+            "Install either:\n"
+            "  - Python: opencv-python\n"
+            "  - or CLI: ffmpeg"
+        )
+
+
+### heic2jpg
+
+
+def _iter_heic_files(root: Path) -> Iterable[Path]:
+    if root.is_file():
+        if root.suffix.lower() == ".heic":
+            yield root
+    elif root.is_dir():
+        yield from root.rglob("*.heic")
+
+
+def _convert_heic_pillow(src: Path, dst: Path, quality: int) -> None:
+    from PIL import Image  # type: ignore
+    import pillow_heif  # type: ignore
+
+    pillow_heif.register_heif_opener()  # type: ignore[attr-defined]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.open(src)
+    img = img.convert("RGB")
+    img.save(dst, "JPEG", quality=quality)
+
+
+def _convert_heic_magick(src: Path, dst: Path, quality: int) -> None:
+    magick = shutil.which("magick")
+    if magick:
+        cmd = [magick, "convert", str(src), "-quality", str(quality), str(dst)]
+    else:
+        convert = shutil.which("convert")
+        if not convert:
+            error("ImageMagick not found (need 'magick' or 'convert').")
+        cmd = [convert, str(src), "-quality", str(quality), str(dst)]
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    run_cmd(cmd)
+
+
+def cmd_heic2jpg(args: argparse.Namespace) -> None:
+    backend = detect_heic_backend()
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        err_file(input_path)
+
+    quality = int(args.quality)
+    workers = args.workers or cpu_workers_default()
+
+    def convert_one(src: Path, dst: Path) -> None:
+        if backend is HeicBackend.PILLOW:
+            _convert_heic_pillow(src, dst, quality)
+        elif backend is HeicBackend.MAGICK:
+            _convert_heic_magick(src, dst, quality)
+        else:
+            error(
+                "No backend available for  heic2jpg.\n"
+                "Install one of:\n"
+                "  - Python: Pillow + pillow_heif\n"
+                "  - or CLI: ImageMagick (magick/convert)"
+            )
+
+    if input_path.is_dir():
+        if args.output:
+            out_dir = Path(args.output)
+        else:
+            out_dir = input_path.parent / f"{input_path.name}_jpg"
+
+        confirm_or_create_dir(out_dir)
+
+        files = list(_iter_heic_files())
+        if not files:
+            print(f"[heic2jpg] No HEIC files found under '{input_path}'.")
+            return
+
+        print(
+            f"[heic2jpg] Backend={backend.name}; converting {len(files)} HEIC file(s) under "
+            f"'{input_path}' to '{out_dir}' using {workers} worker(s)..."
+        )
+
+        def job(src: Path):
+            rel = src.relative_to(input_path)
+            dst = (out_dir / rel).with_suffix(".jpg")
+            convert_one(src, dst)
+            return src, dst
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(job, f): f for f in files}
+            for fut in as_completed(futures):
+                src, dst = fut.result()
+                print(f"  {src} to {dst}")
+
+        print("[heic2jpg] Done!")
+    else:
+        if args.output:
+            dst = Path(args.output)
+        else:
+            dst = input_path.with_suffix(".jpg")
+
+        confirm_or_create_dir(dst.parent)
+        ensure_file_writeable(dst)
+
+        print(f"[heic2jpg] Backend={backend.name}; {input_path} to {dst}")
+        convert_one(input_path, dst)
+        print("[heic2jpg] Done!")
+
+
+### fbx2obj
+
+
+def _iter_fbx_files(root: Path) -> Iterable[Path]:
+    if root.is_file():
+        yield root
+    elif root.is_dir():
+        yield from root.rglob("*.fbx")
+
+
+def _convert_fbx_pyassimp(src: Path, dst: Path) -> None:
+    import pyassimp  # type: ignore
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    scene = pyassimp.load(str(src))
+    try:
+        try:
+            pyassimp.export(scene, str(dst), file_type="obj")  # type: ignore
+        except TypeError:
+            pyassimp.export(scene, str(dst))  # type: ignore[arg-type]
+    finally:
+        pyassimp.release(scene)
+
+
+def _convert_fbx_assimp(src: Path, dst: Path) -> None:
+    assimp = shutil.which("assimp")
+    if not assimp:
+        error("assimp CLI not found in PATH")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [assimp, "export", str(src), str(dst)]
+    run_cmd(cmd)
+
+
+def cmd_fbx2obj(args: argparse.Namespace) -> None:
+    backend = detect_fbx_backend()
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        err_file(input_path)
+
+    workers = args.workers or cpu_workers_default()
+
+    def convert_one(src: Path, dst: Path) -> None:
+        if backend is FbxBackend.PYASSIMP:
+            _convert_fbx_pyassimp(src, dst)
+        elif backend is FbxBackend.ASSIMP:
+            _convert_fbx_assimp(src, dst)
+        else:
+            error(
+                "No backend available for fbx2obj.\n"
+                "Install one of:\n"
+                "  - Python: pyassimp\n"
+                "  - or CLI: assimp"
+            )
+
+    if input_path.is_dir():
+        if args.output:
+            out_dir = Path(args.output)
+        else:
+            out_dir = input_path.parent / f"{input_path.name}_obj"
+
+        confirm_or_create_dir(out_dir)
+
+        files = list(_iter_fbx_files(input_path))
+        if not files:
+            print(f"[fbx2obj] No FBX files found under '{input_path}'")
+            return
+
+        print(
+            f"[fbx2obj] Backend={backend.name}; converting {len(files)} FBX file(s) under "
+            f"'{input_path}' to '{out_dir}' using {workers} worker(s)..."
+        )
+
+        def job(src: Path):
+            rel = src.relative_to(input_path)
+            dst = (out_dir / rel).with_suffix(".obj")
+            convert_one(src, dst)
+            return src, dst
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(job, f): f for f in files}
+            for fut in as_completed(futures):
+                src, dst = fut.result()
+                print("  {src} to {dst}")
+
+        print("[fbx2obj] Done!")
+    else:
+        if args.output:
+            dst = Path(args.output)
+        else:
+            dst = input_path.with_suffix(".obj")
+
+        confirm_or_create_dir(dst.parent)
+        ensure_file_writeable(dst)
+
+        print(f"[fbx2obj] Backend={backend.name}; {input_path} to {dst}")
+        convert_one(input_path, dst)
+        print("[fbx2obj] Done!")
+
+
+### CLI
+
+
+def build_parser() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bd-utils",
+        description="Python CLI to aid in the process of measuring bulk density from photogrammetry. (Whiting et al., 2020)",
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="bd-utils 0.1.0",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # mov2jpg
+    p_mov = subparsers.add_parser(
+        "mov2jpg",
+        help="Convert a MOV file to a sequence of JPG frames.",
+    )
+    p_mov.add_argument("input", help="Input .mov file")
+    p_mov.add_argument("output_dir", help="Directory where frames will be written")
+    p_mov.add_argument(
+        "-f",
+        "--fps",
+        type=float,
+        default=3.0,
+        help="Approximate frame rate to sample from the video (default: 3.0)",
+    )
+    p_mov.set_defaults(func=cmd_mov2jpg)
+
+    # heic2jpg
+    p_heic = subparsers.add_parser(
+        "heic2jpg",
+        help="Convert HEIC file or directory to JPG.",
+    )
+    p_heic.add_argument("input", help="HEIC file or directory")
+    p_heic.add_argument(
+        "-o",
+        "--output",
+        help=(
+            "Output file (for single input file) or directory (for directory input). "
+            "If omitted: file.heic → file.jpg, dir/ → dir_jpg/"
+        ),
+    )
+    p_heic.add_argument(
+        "-q",
+        "--quality",
+        type=int,
+        default=95,
+        help="JPEG quality (0–100, default: 95)",
+    )
+    p_heic.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        help="Number of worker threads for directory conversion (default: half of CPUs).",
+    )
+    p_heic.set_defaults(func=cmd_heic2jpg)
+
+    # fbx2obj
+    p_fbx = subparsers.add_parser(
+        "fbx2obj",
+        help="Convert FBX file or directory to OBJ.",
+    )
+    p_fbx.add_argument("input", help="FBX file or directory")
+    p_fbx.add_argument(
+        "-o",
+        "--output",
+        help=(
+            "Output file (for single input file) or directory (for directory input). "
+            "If omitted: file.fbx → file.obj, dir/ → dir_obj/"
+        ),
+    )
+    p_fbx.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        help="Number of worker threads for directory conversion (default: half of CPUs).",
+    )
+    p_fbx.set_defaults(func=cmd_fbx2obj)
+
+    return parser
+
+
+def main(argv: List[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

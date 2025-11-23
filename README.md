@@ -17,8 +17,13 @@ This script was designed to:
 
 Download script somewhere to your `PATH`, for example:
 ```bash
-  cp bd-utils ~/.local/bin
-  chmod +x "$HOME/.local/bin/bd-utils"
+  cp bdutil ~/.local/bin
+  # OR
+  cp bdpy ~/.local.bin
+  
+  chmod +x "$HOME/.local/bin/bdutil"
+  # OR
+  chmod +x "$HOME/.local/bin/bdpy"
 ```
 
 ---
@@ -26,18 +31,25 @@ Download script somewhere to your `PATH`, for example:
 ## Dependencies
 
 **Required**
-+ `mov2jpg`: `ffmpeg`
-+ `heic2jpg`: ImageMagick (`magick` or `convert`, depending)
-+ `fbx2obj`: `assimp`
++ Python Script:
+  + `mov2jpg`: `opencv-python` OR `ffmpeg`
+  + `heic2jpg`: (`Pillow`, `pillow_heif`) OR ImageMagick (`magick` or `convert`, depending)
+  + `fbx2obj`: `pyassimp` OR `assimp`
+
++ Bash Script:
+  + `mov2jpg`: `ffmpeg`
+  + `heic2jpg`: ImageMagick (`magick` or `convert`, depending)
+  + `fbx2obj`: `assimp`
 
 **Optional**
-+ `exiftool`
-  + Used by `mov2jpg` to copy metadata from the source `.mov` to each extracted `.jpg`.
-  + If not installed, only metadata found by `ffmpeg` will be transferred
-+ `parallel`
-  + Used by `heic2jpg` and `fbx2obj` to speed up directory conversions.
-  + If missing, conversion will run in a sequential loop.
-  + The script automatically sets a parallel job to use half of the available CPU cores.
++ Bash Script:
+  + `exiftool`
+    + Used by `mov2jpg` to copy metadata from the source `.mov` to each extracted `.jpg`.
+    + If not installed, only metadata found by `ffmpeg` will be transferred
+  + `parallel`
+    + Used by `heic2jpg` and `fbx2obj` to speed up directory conversions.
+    + If missing, conversion will run in a sequential loop.
+    + The script automatically sets a parallel job to use half of the available CPU cores.
 
 ---
 
@@ -45,7 +57,9 @@ Download script somewhere to your `PATH`, for example:
 
 The script supports both:
 + `magick convert input.heic output.jpg` for ImageMagick 7
-+ `convert input.heic output.jpg` for ImageMagick
++ `convert input.heic output.jpg` for ImageMagick 6
++ Python tool is still undergoing testing, especially for metadata capture from `.mov` to `.jpg`
+
 
 ---
 
