@@ -2,7 +2,7 @@
 set -euo pipefail
 
 print_usage() {
-  echo "Usage: fbx2obj [-a] [-i <INPUT>] [-o <OUTPUT>]"
+	echo "Usage: fbx2obj [-a] [-i <INPUT>] [-o <OUTPUT>]"
 }
 
 a=0
@@ -10,25 +10,26 @@ input=""
 output=""
 
 while getopts 'ai:o:' flag; do
-  case "$flag" in
-    a) a=1 ;;
-    i) input="$OPTARG" ;;
-    o) output="$OPTARG" ;;
-    *) print_usage
-       exit 1 ;;
-  esac
+	case "$flag" in
+	a) a=1 ;;
+	i) input="$OPTARG" ;;
+	o) output="$OPTARG" ;;
+	*)
+		print_usage
+		exit 1
+		;;
+	esac
 done
 
 if [[ $a -eq 1 ]]; then
-  find . -name "*.fbx" | parallel --bar -j1 -I{} assimp export {} {.}.obj
-  exit 0;
+	find . -name "*.fbx" | parallel --bar -j1 -I{} assimp export {} {.}.obj
+	exit 0
 fi
 
 if [ ! -f "$input" ]; then
-  print_usage
+	print_usage
 elif [ ! -f "$output" ]; then
-  assimp export "$input" "${input%.*}.obj"
+	assimp export "$input" "${input%.*}.obj"
 else
-  assimp export "$input" "$output"
+	assimp export "$input" "$output"
 fi
-

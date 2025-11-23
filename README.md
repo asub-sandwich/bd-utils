@@ -1,43 +1,54 @@
 # bd-utils
-A series of scripts to aid in the process of calculating bulk density from turntable photogrammetry. Currently written in bash, but I may make a python option for Win friends. This is just a wrapper around available programs.
 
-I also have not added anything to ensure you have the correct packages to download. Ill get to it eventually.
+A small CLI wrapper to aid in the process of calculating bulk density from turntable photogrammetry. 
 
-## exframe
++ `mov2jpg` - Extract JPEG frames from Apple `.mov` videos using ffmpeg
++ `heic2jpg` - Convert HEIC photos (files or directories) to JPEG using ImageMagick
++ `fbx2obj` - Convert Autodesk FBX models (files or directories) to OBJ using `assimp`
 
-**CURRENTLY ONLY FOR APPLE .MOV FILES**
-takes a *.mov file and converts it to jpgs with a customizable frame rate. Used so turntable photogrammetry can be performed by taking a video instead of several pictures. Personal tests have resulted in no change in volume when done this way.
+This script was designed to:
+1. Work with both `magick convert` and `convert` depending on versioning
+2. Optionally - use `parallel` to speed up directory conversions
+3. Optionally - use `exiftool` to copy metadata from video frames
 
-```
-$ exframe path/to/input.mov path/to/output_dir 3
-```
-takes input.mov and converts it to jpgs, written to output_dir with 3 images generated per second of video
+---
 
-## fbx2obj
+## Installation
 
-convert an AutoDesk ReCap mesh object (fbx) into a standard object (obj) file. This is done because AutoDesk Fusion 360 does not allow opening meshes created in their own f-ing software.
-
-```
-$ fbx2obj [-a] -i <path/to/input.fbx> -o <path/to/output.obj>
-
-  -a: search for all fbx files in current working directory 
+Download script somewhere to your `PATH`, for example:
+```bash
+  cp bd-utils ~/.local/bin
+  chmod +x "$HOME/.local/bin/bd-utils"
 ```
 
-## heic2jpg
+---
 
-converts heic to jpg (if u are lame and want to sit there and take 35 pictures!). Converts entire directory of jpgs at a time.
+## Dependencies
 
-```
-$ heic2jpg <path/to/input_dir> <path/to/output_dir>
-```
+**Required**
++ `mov2jpg`: `ffmpeg`
++ `heic2jpg`: ImageMagick (`magick` or `convert`, depending)
++ `fbx2obj`: `assimp`
 
-## Future
+**Optional**
++ `exiftool`
+  + Used by `mov2jpg` to copy metadata from the source `.mov` to each extracted `.jpg`.
+  + If not installed, only metadata found by `ffmpeg` will be transferred
++ `parallel`
+  + Used by `heic2jpg` and `fbx2obj` to speed up directory conversions.
+  + If missing, conversion will run in a sequential loop.
+  + The script automatically sets a parallel job to use half of the available CPU cores.
 
-+ Python?
-+ Android video/photo compat?
-+ Add dependency checks (bash)
-+ Commands are currently different for one program used in fbx2obj depending if you are on a rolling release or stable release disto, so i should probably account for that.
-+ Might be nice to make it into one script and then choose a subcommand?
+---
 
-## Use & Acknowledgement
-Use at your own risk, but I am more than happy to help with an issue with the scripts or with photogrammetry & bulk density.
+## Notes
+
+The script supports both:
++ `magick convert input.heic output.jpg` for ImageMagick 7
++ `convert input.heic output.jpg` for ImageMagick
+
+---
+
+## License
+
+GNU GPLv3.0
