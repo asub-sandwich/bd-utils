@@ -86,7 +86,7 @@ def confirm_or_create_dir(path: Path) -> None:
             err_dir(p)
         if any(p.iterdir()):
             ok = ask_yn(
-                "Directory '{p}' is not empty. "
+                f"Directory '{p}' is not empty. "
                 "Overwrite existing files in this directory as needed?",
                 default=False,
             )
@@ -163,6 +163,26 @@ def detect_fbx_backend() -> FbxBackend:
         return FbxBackend.NONE
 
 
+def show_backends() -> None:
+    mov = detect_mov_backend()
+    heic = detect_heic_backend()
+    fbx = detect_fbx_backend()
+
+    print("Detected backends:")
+    print(f"  mov2jpg : {mov.name}")
+    print(f"  heic2jpg: {heic.name}")
+    print(f"  fbx2obj : {fbx.name}")
+
+    if mov is MovBackend.NONE:
+        print("    - mov2jpg: install 'opencv-python' or the 'ffmpeg' CLI to enable.")
+    if heic is HeicBackend.NONE:
+        print(
+            "    - heic2jpg: install 'Pillow' + 'pillow_heif' or  the ImageMagick CLI to enable."
+        )
+    if fbx is FbxBackend.NONE:
+        print("    - fbx2obj: install 'pyassimp' or the 'assimp' CLI to enable")
+
+
 ### mov2jpg
 
 
@@ -189,7 +209,7 @@ def cmd_mov2jpg(args: argparse.Namespace) -> None:
         source_fps = cap.get(cv2.CAP_PROP_FPS)
         if not source_fps or source_fps <= 0:
             frame_step = 1
-            print(f"[mov2jpg] Backend=CV2; source FPS unknown; saving every frame")
+            print("[mov2jpg] Backend=CV2; source FPS unknown; saving every frame")
         else:
             frame_step = max(int(round(source_fps / fps)), 1)
             print(
@@ -487,7 +507,13 @@ def build_parser() -> argparse.Namespace:
         version="bd-utils 0.1.0",
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--backends",
+        action="store_true",
+        help="Show which backends are available and exist.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     # mov2jpg
     p_mov = subparsers.add_parser(
@@ -562,6 +588,15 @@ def build_parser() -> argparse.Namespace:
 def main(argv: List[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if getattr(args, "backends", False) and args.command is None:
+        show_backends()
+        return
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
     args.func(args)
 
 
